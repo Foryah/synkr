@@ -1,0 +1,51 @@
+#!/bin/python
+
+import glob
+import argparse
+import hashlib
+
+from halo import Halo
+from os.path import isdir
+from typing import Dict
+
+
+def extract_folder_info(folder_path: str) -> Dict[str, str]:
+    info: Dict[str, str] = {}
+
+    for file_path in glob.iglob(folder_path + "**/*", recursive=True):
+        if isdir(file_path):
+            continue
+
+        filename = file_path.replace(folder_path, "")
+        with open(file_path, "rb") as f:
+            readable_hash = hashlib.sha256(f.read()).hexdigest()
+            info[filename] = readable_hash
+
+    return info
+
+
+def compare_folders(first_path: str, second_path: str):
+    if not isdir(first_path) or not isdir(second_path):
+        raise ValueError("The paths need to point to folders!")
+
+    with Halo(text="Extracting info from {}".format(first_path), spinner="dots"):
+        first_info = extract_folder_info(first_path)
+    with Halo(text="Extracting info from {}".format(second_path), spinner="dots"):
+        second_info = extract_folder_info(second_path)
+
+    for filename in first_info:
+        if filename in second_info:
+            if first_info[filename] != second_info[filename]:
+                print("~!{}!~".format(filename))
+
+        else:
+            print(filename)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Synchronize two folders")
+    parser.add_argument("first_path", metavar="/path/to/first/folder/", type=str, help="path to the first folder")
+    parser.add_argument("second_path", metavar="/path/to/second/folder/", type=str, help="path to the second folder")
+
+    args = parser.parse_args()
+    compare_folders(args.first_path, args.second_path)
