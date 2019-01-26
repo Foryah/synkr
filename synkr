@@ -129,6 +129,11 @@ def copy_different_files(file_operations: List[FileOperation], skip_confirmation
         file_operation.copy_to_target()
 
 
+def display_operations(file_operations: List[FileOperation]):
+    for file_operation in file_operations:
+        print(file_operation.file_obj.filename)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Synchronize two folders")
     parser.add_argument("base_path", metavar="/path/to/first/folder/", type=str, help="path to the first folder")
@@ -144,7 +149,18 @@ if __name__ == "__main__":
         default=False,
         help="Check file integrity using sha256 or not",
     )
+    parser.add_argument(
+        "-d",
+        "--dry-run",
+        action="store_true",
+        dest="dry_run",
+        default=False,
+        help="Dry run. Just display the files that would be copied",
+    )
 
     args = parser.parse_args()
     file_operations = get_different_files(args.base_path, args.target_path, args.integrity)
-    copy_different_files(file_operations, args.skip)
+    if args.dry_run:
+        display_operations(file_operations)
+    else:
+        copy_different_files(file_operations, args.skip)
