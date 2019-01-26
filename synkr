@@ -5,47 +5,146 @@ import argparse
 import hashlib
 
 from halo import Halo
-from os.path import isdir
-from typing import Dict
+from os.path import isdir, isfile
+from shutil import copyfile
+from typing import List, Tuple
+from enum import Enum
+
+MISSING_SHA = "missing_sha"
 
 
-def extract_folder_info(folder_path: str) -> Dict[str, str]:
-    info: Dict[str, str] = {}
+class DifferenceType(Enum):
+    MISSING_FILE = "missing_file"
+    DIFFERENT_FILE = "different_file"
+    SAME_FILE = "same_file"
+
+
+class File:
+    def __init__(self, base_path: str, filename: str):
+        self.base_path = base_path
+        self.filename = filename
+        self.sha_key = MISSING_SHA
+
+    def set_sha_key(self, sha_key: str):
+        self.sha_key = sha_key
+
+    @property
+    def full_path(self):
+        return self.base_path + self.filename
+
+    def exists_in_folder(self, folder_path: str, check_integrity: bool = False) -> Tuple[DifferenceType, bool]:
+        target_path = folder_path + self.filename
+        file_exists = isfile(target_path)
+
+        if not file_exists:
+            return (DifferenceType.MISSING_FILE, False)
+        elif check_integrity:
+            if self.sha_key == MISSING_SHA:
+                raise ValueError("You need to first set the sha key before you can check the integrity!")
+
+            with open(target_path, "rb") as f:
+                target_sha_key = hashlib.sha256(f.read()).hexdigest()
+
+                if self.sha_key != target_sha_key:
+                    return (DifferenceType.DIFFERENT_FILE, False)
+
+        return (DifferenceType.SAME_FILE, True)
+
+
+class FileOperation:
+    def __init__(self, file_obj: File, target_path: str, difference_type: DifferenceType):
+        self.file_obj = file_obj
+        self.target_path = target_path
+        self.difference_type = difference_type
+
+    def copy_to_target(self, replace: bool = False):
+        target_full_path = self.target_path + self.file_obj.filename
+
+        if isfile(target_full_path) and not replace:
+            raise ValueError(f"The target path already exists {target_full_path}")
+
+        copyfile(self.file_obj.full_path, target_full_path)
+
+
+def extract_files_list(folder_path: str, check_integrity: bool) -> List[File]:
+    files_list: List[File] = []
 
     for file_path in glob.iglob(folder_path + "**/*", recursive=True):
         if isdir(file_path):
             continue
 
         filename = file_path.replace(folder_path, "")
-        with open(file_path, "rb") as f:
-            readable_hash = hashlib.sha256(f.read()).hexdigest()
-            info[filename] = readable_hash
+        file_obj = File(folder_path, filename)
 
-    return info
+        if check_integrity:
+            with open(file_path, "rb") as f:
+                sha_key = hashlib.sha256(f.read()).hexdigest()
+                file_obj.set_sha_key(sha_key)
+
+        files_list.append(file_obj)
+
+    return files_list
 
 
-def compare_folders(first_path: str, second_path: str):
-    if not isdir(first_path) or not isdir(second_path):
+def get_different_files(base_path: str, target_path: str, check_integrity: bool) -> List[FileOperation]:
+    if not isdir(base_path) or not isdir(target_path):
         raise ValueError("The paths need to point to folders!")
 
-    with Halo(text="Extracting info from {}".format(first_path), spinner="dots"):
-        first_info = extract_folder_info(first_path)
-    with Halo(text="Extracting info from {}".format(second_path), spinner="dots"):
-        second_info = extract_folder_info(second_path)
+    with Halo(text=f"Extracting files list from base_path", spinner="dots"):
+        files_list = extract_files_list(base_path, check_integrity)
 
-    for filename in first_info:
-        if filename in second_info:
-            if first_info[filename] != second_info[filename]:
-                print("~!{}!~".format(filename))
+    file_operations: List[FileOperation] = []
+    for file_obj in files_list:
+        difference_type, does_exist = file_obj.exists_in_folder(target_path, check_integrity)
+        if not does_exist:
+            file_operations.append(FileOperation(file_obj, target_path, difference_type))
 
-        else:
-            print(filename)
+    return file_operations
+
+
+def ask_for_confirmation(file_operation: FileOperation) -> bool:
+    operation = "copy"
+    if file_operation.difference_type == DifferenceType.DIFFERENT_FILE:
+        operation = "replace"
+
+    confirmation = input(
+        f"Are you sure you want to {operation} {file_operation.file_obj.filename} "
+        f"from {file_operation.file_obj.base_path} to {file_operation.target_path}? [Y]es/[N]o "
+    )
+
+    if confirmation.lower() not in ["y", "n"]:
+        print(confirmation.lower())
+        return ask_for_confirmation(file_operation)
+
+    return confirmation == "y"
+
+
+def copy_different_files(file_operations: List[FileOperation], skip_confirmation: bool):
+    for file_operation in file_operations:
+        if not skip_confirmation:
+            confirmation = ask_for_confirmation(file_operation)
+            if not confirmation:
+                continue
+
+        file_operation.copy_to_target()
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Synchronize two folders")
-    parser.add_argument("first_path", metavar="/path/to/first/folder/", type=str, help="path to the first folder")
-    parser.add_argument("second_path", metavar="/path/to/second/folder/", type=str, help="path to the second folder")
+    parser.add_argument("base_path", metavar="/path/to/first/folder/", type=str, help="path to the first folder")
+    parser.add_argument("target_path", metavar="/path/to/second/folder/", type=str, help="path to the second folder")
+    parser.add_argument(
+        "-s", "--skip", action="store_true", dest="skip", default=False, help="Skip confirmation for all copy"
+    )
+    parser.add_argument(
+        "-i",
+        "--check_integrity",
+        action="store_true",
+        dest="integrity",
+        default=False,
+        help="Check file integrity using sha256 or not",
+    )
 
     args = parser.parse_args()
-    compare_folders(args.first_path, args.second_path)
+    file_operations = get_different_files(args.base_path, args.target_path, args.integrity)
+    copy_different_files(file_operations, args.skip)
